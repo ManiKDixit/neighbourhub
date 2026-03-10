@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/primarybutton";
 import { Textarea } from "@/components/ui/textarea";
 import { useGeolocation, getNeighbourhood } from "@/src/hooks/use-geolocation";
 import { Send, MapPin, Sparkles, Loader2, RefreshCw } from "lucide-react";
