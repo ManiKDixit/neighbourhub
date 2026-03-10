@@ -1,7 +1,7 @@
 "use client";
 
 import { createClient } from "@/src/lib/supabase/client";
-import { Button } from "@/components/ui/primarybutton";
+import { Button } from "@/components/ui/button";
 
 export function LoginButton() {
   const supabase = createClient();

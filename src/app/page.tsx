@@ -1,7 +1,7 @@
 import { createClient } from "@/src/lib/supabase/server";
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { Button } from "@/components/ui/primarybutton";
+import { Button } from "@/components/ui/button";
 
 export default async function Home() {
   const supabase = await createClient();
