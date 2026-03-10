@@ -1,19 +1,19 @@
-'use client'
+"use client";
 
-import { createClient } from '@/src/lib/supabase/client'
-import { Button } from '@/components/ui/button'
+import { createClient } from "@/src/lib/supabase/client";
+import { Button } from "@/components/ui/primarybutton";
 
 export function LoginButton() {
-  const supabase = createClient()
+  const supabase = createClient();
 
   const handleLogin = async () => {
     await supabase.auth.signInWithOAuth({
-      provider: 'google',
+      provider: "google",
       options: {
         redirectTo: `${window.location.origin}/auth/callback`,
       },
-    })
-  }
+    });
+  };
 
   return (
     <Button onClick={handleLogin} variant="outline" className="gap-2">
@@ -37,5 +37,5 @@ export function LoginButton() {
       </svg>
       Sign in with Google
     </Button>
-  )
+  );
 }
