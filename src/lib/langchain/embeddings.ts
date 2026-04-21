@@ -1,10 +1,8 @@
 import { InferenceClient } from '@huggingface/inference'
 import { createClient } from '@supabase/supabase-js'
 
-
 const hf = new InferenceClient(process.env.HUGGINGFACE_API_KEY)
 
-// Admin client for database operations
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -12,7 +10,6 @@ const supabase = createClient(
 
 /**
  * Generate embeddings using HuggingFace (free)
- * Using a smaller model that returns 384 dimensions
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
   try {
@@ -20,8 +17,6 @@ export async function generateEmbedding(text: string): Promise<number[]> {
       model: 'sentence-transformers/all-MiniLM-L6-v2',
       inputs: text,
     })
-    
-    // Response is already an array of numbers
     return response as number[]
   } catch (error) {
     console.error('Embedding error:', error)
@@ -39,7 +34,6 @@ export async function addDocument(
   neighbourhood: string,
   metadata?: Record<string, unknown>
 ) {
-  // Generate embedding for the document
   const textToEmbed = `${title}\n${content}`
   const embedding = await generateEmbedding(textToEmbed)
   
@@ -73,23 +67,108 @@ export async function searchDocuments(
   limit: number = 5
 ): Promise<any[]> {
   try {
+    console.log(`[Search] Query: "${query}", Neighbourhood: ${neighbourhood || 'any'}`)
+    
     const queryEmbedding = await generateEmbedding(query)
     
-    const { data, error } = await supabase.rpc('match_documents', {
-      query_embedding: queryEmbedding,
-      match_threshold: 0.2,  // Lower threshold for more results
-      match_count: limit,
-      user_neighbourhood: neighbourhood || null,
-    })
+    // Try RPC function first
+    try {
+      const { data, error } = await supabase.rpc('match_documents', {
+        query_embedding: queryEmbedding,
+        match_threshold: 0.1,  // Very low threshold to get more results
+        match_count: limit,
+        user_neighbourhood: neighbourhood || null,
+      })
 
-    if (error) {
-      console.error('Search error:', error)
-      return []
+      if (error) {
+        console.error('[Search] RPC error:', error.message)
+        // Fall back to direct query
+        return await fallbackSearch(query, neighbourhood, limit)
+      }
+
+      console.log(`[Search] RPC returned ${data?.length || 0} results`)
+      return data || []
+    } catch (rpcError) {
+      console.error('[Search] RPC failed, using fallback:', rpcError)
+      return await fallbackSearch(query, neighbourhood, limit)
     }
-
-    return data || []
+    
   } catch (error) {
-    console.error('Search documents error:', error)
+    console.error('[Search] Error:', error)
     return []
   }
+}
+
+/**
+ * Fallback search using direct query (no vector similarity)
+ */
+async function fallbackSearch(
+  query: string,
+  neighbourhood?: string | null,
+  limit: number = 5
+): Promise<any[]> {
+  console.log('[Search] Using fallback text search')
+  
+  let queryBuilder = supabase
+    .from('community_documents')
+    .select('id, title, content, category, neighbourhood, metadata')
+    .limit(limit)
+  
+  // Filter by neighbourhood if provided
+  if (neighbourhood) {
+    queryBuilder = queryBuilder.eq('neighbourhood', neighbourhood)
+  }
+  
+  // Try to match by category based on query
+  const loweredQuery = query.toLowerCase()
+  let categoryFilter: string | null = null
+  
+  if (loweredQuery.includes('cafe') || loweredQuery.includes('coffee')) {
+    categoryFilter = 'food'
+  } else if (loweredQuery.includes('restaurant') || loweredQuery.includes('food')) {
+    categoryFilter = 'food'
+  } else if (loweredQuery.includes('park') || loweredQuery.includes('garden')) {
+    categoryFilter = 'leisure'
+  } else if (loweredQuery.includes('safe') || loweredQuery.includes('crime')) {
+    categoryFilter = 'safety'
+  } else if (loweredQuery.includes('event')) {
+    categoryFilter = 'event'
+  }
+  
+  if (categoryFilter) {
+    queryBuilder = queryBuilder.eq('category', categoryFilter)
+  }
+  
+  const { data, error } = await queryBuilder
+  
+  if (error) {
+    console.error('[Fallback Search] Error:', error)
+    return []
+  }
+  
+  console.log(`[Fallback Search] Found ${data?.length || 0} results`)
+  return data || []
+}
+
+/**
+ * Get all documents for a neighbourhood (for debugging)
+ */
+export async function getAllDocuments(neighbourhood?: string): Promise<any[]> {
+  let query = supabase
+    .from('community_documents')
+    .select('id, title, content, category, neighbourhood')
+    .limit(100)
+  
+  if (neighbourhood) {
+    query = query.eq('neighbourhood', neighbourhood)
+  }
+  
+  const { data, error } = await query
+  
+  if (error) {
+    console.error('Get all error:', error)
+    return []
+  }
+  
+  return data || []
 }

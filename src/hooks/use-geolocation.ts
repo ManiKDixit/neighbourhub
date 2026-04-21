@@ -54,15 +54,35 @@ export function useGeolocation() {
   return state
 }
 
-// Helper to get neighbourhood from coordinates (using reverse geocoding)
+// Helper to get neighbourhood from coordinates using Postcodes.io (UK) or Nominatim fallback
 export async function getNeighbourhood(lat: number, lng: number): Promise<string> {
   try {
+    // Try Postcodes.io first (better for UK)
+    const postcodeRes = await fetch(
+      `https://api.postcodes.io/postcodes?lon=${lng}&lat=${lat}&limit=1`
+    )
+    const postcodeData = await postcodeRes.json()
+    
+    if (postcodeData.result?.[0]) {
+      const result = postcodeData.result[0]
+      // Return the most specific area name available
+      return result.admin_ward || result.admin_district || result.region || 'Unknown'
+    }
+    
+    // Fallback to Nominatim for non-UK locations
     const response = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,
+      { headers: { 'User-Agent': 'NeighbourHub/1.0' } }
     )
     const data = await response.json()
-    return data.address?.suburb || data.address?.neighbourhood || data.address?.city || 'Unknown'
-  } catch {
+    return data.address?.suburb || 
+           data.address?.neighbourhood || 
+           data.address?.city_district ||
+           data.address?.city || 
+           data.address?.town ||
+           'Unknown'
+  } catch (error) {
+    console.error('Geolocation error:', error)
     return 'Unknown'
   }
 }

@@ -1,79 +1,35 @@
-import { NextResponse } from 'next/server'
-import { addDocument } from '@/src/lib/langchain/embeddings'
+import { NextRequest, NextResponse } from 'next/server'
+import { seedLocationData } from '@/src/lib/data-sources/data-aggregator'
 
-const SAMPLE_DOCUMENTS = [
-  {
-    title: "Guildford Farmers Market",
-    content: "Weekly farmers market every Saturday 9am-2pm in Guildford High Street. Fresh local produce, artisan breads, organic vegetables, local honey, and homemade jams. Family-friendly atmosphere with live music.",
-    category: "event",
-    neighbourhood: "Guildford"
-  },
-  {
-    title: "Stoke Park",
-    content: "Beautiful 30-acre public park featuring Japanese garden, playground, skateboard area, tennis courts, and bowling green. Open dawn to dusk. Free entry. Popular for picnics and community events.",
-    category: "leisure",
-    neighbourhood: "Guildford"
-  },
-  {
-    title: "The Boileroom",
-    content: "Independent live music venue on Stoke Road. Regular gigs featuring local and touring bands, comedy nights, quiz nights, and community events. Check website for upcoming listings. Bar and food available.",
-    category: "entertainment",
-    neighbourhood: "Guildford"
-  },
-  {
-    title: "Guildford Library",
-    content: "Central library offering free book lending, computer access, printing services, and free WiFi. Regular events include reading groups, children's story time, and digital skills workshops. Open Monday to Saturday.",
-    category: "service",
-    neighbourhood: "Guildford"
-  },
-  {
-    title: "Guildford Lido",
-    content: "Historic outdoor swimming pool open May to September. 50-metre heated pool, splash area for children, sunbathing terrace, and café. Swimming lessons and aqua aerobics available.",
-    category: "leisure",
-    neighbourhood: "Guildford"
-  },
-  {
-    title: "Holy Trinity Church Community Café",
-    content: "Welcoming community café in the town centre. Affordable hot drinks, homemade cakes, and light lunches. Open weekdays 10am-2pm. All welcome, great place to meet neighbours.",
-    category: "community",
-    neighbourhood: "Guildford"
-  },
-  {
-    title: "Guildford Volunteer Centre",
-    content: "Connect with local volunteering opportunities. Roles available in charity shops, befriending services, environmental projects, and community events. Training provided for all volunteers.",
-    category: "service",
-    neighbourhood: "Guildford"
-  },
-  {
-    title: "Friday Night Food Market",
-    content: "Street food market every Friday 5-9pm at the Castle Grounds. International cuisines, craft beers, and live entertainment. Family-friendly with seating areas.",
-    category: "event",
-    neighbourhood: "Guildford"
-  }
-]
-
-export async function POST() {
+export async function POST(request: NextRequest) {
   try {
-    const results = []
-    
-    for (const doc of SAMPLE_DOCUMENTS) {
-      console.log(`Adding document: ${doc.title}`)
-      const result = await addDocument(
-        doc.title,
-        doc.content,
-        doc.category,
-        doc.neighbourhood
+    const { latitude, longitude } = await request.json()
+
+    if (!latitude || !longitude) {
+      return NextResponse.json(
+        { error: 'Latitude and longitude are required' },
+        { status: 400 }
       )
-      results.push(result)
     }
 
-    return NextResponse.json({ 
+    console.log(`Seeding data for location: ${latitude}, ${longitude}`)
+
+    // Use the dynamic data aggregator to fetch real data from:
+    // - OpenStreetMap (POIs, restaurants, parks, etc.)
+    // - Police UK API (crime data, neighbourhood events)
+    // - Postcodes.io (location info)
+    const result = await seedLocationData(latitude, longitude)
+
+    console.log(`Seeded ${result.documentsCreated} documents for ${result.neighbourhood}`)
+
+    return NextResponse.json({
       success: true,
-      message: `Seeded ${results.length} documents`,
-      documents: results.map(r => r?.title)
+      documentsCreated: result.documentsCreated,
+      neighbourhood: result.neighbourhood,
+      categories: result.categories,
     })
   } catch (error) {
-    console.error('Seed error:', error)
+    console.error('Seed location error:', error)
     return NextResponse.json(
       { error: String(error) },
       { status: 500 }

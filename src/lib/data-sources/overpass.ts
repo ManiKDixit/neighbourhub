@@ -1,6 +1,12 @@
+/**
+ * POI Data Fetcher
+ * Uses multiple free APIs with fallbacks:
+ * 1. OpenTripMap (most reliable)
+ * 2. Overpass API (backup)
+ */
+
 export interface POI {
-  id: number
-  type: 'node' | 'way' | 'relation'
+  id: string | number
   name: string
   category: string
   subcategory: string
@@ -9,210 +15,164 @@ export interface POI {
   tags: Record<string, string>
 }
 
-// Common amenity types to query
-const AMENITY_CATEGORIES = {
-  food: ['restaurant', 'cafe', 'pub', 'fast_food', 'bar'],
-  health: ['pharmacy', 'doctors', 'dentist', 'hospital', 'clinic'],
-  shopping: ['supermarket', 'convenience', 'bakery', 'butcher'],
-  services: ['bank', 'post_office', 'library', 'community_centre'],
-  education: ['school', 'kindergarten', 'college', 'university'],
-  leisure: ['park', 'playground', 'sports_centre', 'swimming_pool'],
-  transport: ['bus_station', 'parking', 'fuel', 'bicycle_rental'],
+// OpenTripMap category mappings
+const OTM_CATEGORIES: Record<string, { kinds: string; category: string }> = {
+  food: { kinds: 'restaurants,cafes,pubs,bars,fast_food', category: 'food' },
+  shops: { kinds: 'shops,supermarkets,malls', category: 'shopping' },
+  leisure: { kinds: 'parks,gardens,sport', category: 'leisure' },
+  culture: { kinds: 'museums,theatres,cinemas', category: 'culture' },
+  health: { kinds: 'hospitals,pharmacies,clinics', category: 'health' },
 }
 
 /**
- * Query Overpass API
+ * Fetch POIs from OpenTripMap (free, no API key required for limited use)
  */
-async function queryOverpass(query: string): Promise<any> {
-  const response = await fetch('https://overpass-api.de/api/interpreter', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `data=${encodeURIComponent(query)}`,
-  })
-  
-  if (!response.ok) {
-    throw new Error(`Overpass API error: ${response.status}`)
+async function fetchFromOpenTripMap(
+  lat: number,
+  lng: number,
+  radius: number,
+  kinds: string
+): Promise<POI[]> {
+  try {
+    // OpenTripMap free tier - no API key needed for basic requests
+    const url = `https://api.opentripmap.com/0.1/en/places/radius?radius=${radius}&lon=${lng}&lat=${lat}&kinds=${kinds}&limit=25&format=json`
+    
+    console.log(`OpenTripMap: Fetching ${kinds}...`)
+    
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'NeighbourHub/1.0',
+      },
+    })
+    
+    if (!response.ok) {
+      console.log(`OpenTripMap returned ${response.status}`)
+      return []
+    }
+    
+    const data = await response.json()
+    
+    if (!Array.isArray(data)) {
+      return []
+    }
+    
+    return data
+      .filter((item: any) => item.name && item.name.trim() !== '')
+      .map((item: any) => ({
+        id: item.xid || item.osm,
+        name: item.name,
+        category: kinds.split(',')[0],
+        subcategory: item.kinds?.split(',')[0]?.replace(/_/g, ' ') || 'place',
+        latitude: item.point?.lat || lat,
+        longitude: item.point?.lon || lng,
+        tags: { kinds: item.kinds || '' },
+      }))
+      
+  } catch (error) {
+    console.error('OpenTripMap error:', error)
+    return []
   }
-  
-  return response.json()
 }
 
 /**
- * Get POIs near a location by category
- * @param lat Latitude
- * @param lng Longitude
- * @param radiusMetres Search radius in metres (default 1000m = 1km)
- * @param categories Array of categories to search (e.g., ['food', 'health'])
+ * Fetch from Overpass as backup
+ */
+async function fetchFromOverpass(
+  lat: number,
+  lng: number,
+  radius: number,
+  amenityTypes: string
+): Promise<POI[]> {
+  try {
+    const query = `[out:json][timeout:25];
+node["amenity"~"${amenityTypes}"](around:${radius},${lat},${lng});
+out body;`
+
+    const response = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'NeighbourHub/1.0',
+      },
+      body: `data=${encodeURIComponent(query)}`,
+    })
+    
+    if (!response.ok) {
+      return []
+    }
+    
+    const data = await response.json()
+    
+    return (data.elements || [])
+      .filter((el: any) => el.tags?.name)
+      .map((el: any) => ({
+        id: el.id,
+        name: el.tags.name,
+        category: 'food',
+        subcategory: el.tags.amenity?.replace(/_/g, ' ') || 'place',
+        latitude: el.lat,
+        longitude: el.lon,
+        tags: el.tags || {},
+      }))
+      
+  } catch (error) {
+    console.error('Overpass error:', error)
+    return []
+  }
+}
+
+/**
+ * Main function: Get all POIs near a location
  */
 export async function getPOIsNearLocation(
   lat: number,
   lng: number,
-  radiusMetres: number = 1000,
-  categories?: (keyof typeof AMENITY_CATEGORIES)[]
+  radiusMetres: number = 1500
 ): Promise<POI[]> {
-  try {
-    // Build amenity list
-    const selectedCategories = categories || Object.keys(AMENITY_CATEGORIES) as (keyof typeof AMENITY_CATEGORIES)[]
-    const amenities = selectedCategories.flatMap(cat => AMENITY_CATEGORIES[cat])
+  console.log(`Fetching POIs near ${lat}, ${lng}...`)
+  
+  const allPOIs: POI[] = []
+  
+  // Try OpenTripMap first (more reliable)
+  for (const [name, config] of Object.entries(OTM_CATEGORIES)) {
+    console.log(`Fetching ${name}...`)
+    const pois = await fetchFromOpenTripMap(lat, lng, radiusMetres, config.kinds)
     
-    // Overpass QL query - search for nodes and ways with these amenities
-    const query = `
-      [out:json][timeout:25];
-      (
-        node["amenity"~"${amenities.join('|')}"](around:${radiusMetres},${lat},${lng});
-        way["amenity"~"${amenities.join('|')}"](around:${radiusMetres},${lat},${lng});
-        node["shop"](around:${radiusMetres},${lat},${lng});
-        way["shop"](around:${radiusMetres},${lat},${lng});
-      );
-      out center;
-    `
+    // Update category
+    pois.forEach(poi => poi.category = config.category)
+    allPOIs.push(...pois)
     
-    const data = await queryOverpass(query)
-    
-    return data.elements
-      .filter((el: any) => el.tags?.name) // Only include named places
-      .map((el: any) => {
-        const amenity = el.tags.amenity || el.tags.shop || 'unknown'
-        const category = findCategory(amenity)
-        
-        return {
-          id: el.id,
-          type: el.type,
-          name: el.tags.name,
-          category,
-          subcategory: amenity.replace(/_/g, ' '),
-          latitude: el.lat || el.center?.lat,
-          longitude: el.lon || el.center?.lon,
-          tags: el.tags,
-        }
-      })
-  } catch (error) {
-    console.error('Overpass query failed:', error)
-    return []
+    // Small delay between requests
+    await new Promise(r => setTimeout(r, 300))
   }
+  
+  console.log(`OpenTripMap found ${allPOIs.length} places`)
+  
+  // If OpenTripMap didn't return enough, try Overpass
+  if (allPOIs.length < 10) {
+    console.log('Trying Overpass as backup...')
+    const overpassPOIs = await fetchFromOverpass(lat, lng, radiusMetres, 'restaurant|cafe|pub|fast_food')
+    allPOIs.push(...overpassPOIs)
+  }
+  
+  console.log(`Total POIs: ${allPOIs.length}`)
+  return allPOIs
 }
 
 /**
- * Find which category an amenity belongs to
- */
-function findCategory(amenity: string): string {
-  for (const [category, amenities] of Object.entries(AMENITY_CATEGORIES)) {
-    if (amenities.includes(amenity)) return category
-  }
-  return 'other'
-}
-
-/**
- * Get specific type of POI (e.g., all cafes)
- */
-export async function getSpecificPOIs(
-  lat: number,
-  lng: number,
-  amenityType: string,
-  radiusMetres: number = 1000
-): Promise<POI[]> {
-  try {
-    const query = `
-      [out:json][timeout:25];
-      (
-        node["amenity"="${amenityType}"](around:${radiusMetres},${lat},${lng});
-        way["amenity"="${amenityType}"](around:${radiusMetres},${lat},${lng});
-      );
-      out center;
-    `
-    
-    const data = await queryOverpass(query)
-    
-    return data.elements
-      .filter((el: any) => el.tags?.name)
-      .map((el: any) => ({
-        id: el.id,
-        type: el.type,
-        name: el.tags.name,
-        category: findCategory(amenityType),
-        subcategory: amenityType.replace(/_/g, ' '),
-        latitude: el.lat || el.center?.lat,
-        longitude: el.lon || el.center?.lon,
-        tags: el.tags,
-      }))
-  } catch (error) {
-    console.error('Overpass query failed:', error)
-    return []
-  }
-}
-
-/**
- * Get parks and green spaces
+ * Get parks specifically
  */
 export async function getParksNearLocation(
   lat: number,
   lng: number,
   radiusMetres: number = 2000
 ): Promise<POI[]> {
-  try {
-    const query = `
-      [out:json][timeout:25];
-      (
-        way["leisure"="park"](around:${radiusMetres},${lat},${lng});
-        way["leisure"="garden"](around:${radiusMetres},${lat},${lng});
-        way["leisure"="playground"](around:${radiusMetres},${lat},${lng});
-        relation["leisure"="park"](around:${radiusMetres},${lat},${lng});
-      );
-      out center;
-    `
-    
-    const data = await queryOverpass(query)
-    
-    return data.elements
-      .filter((el: any) => el.tags?.name)
-      .map((el: any) => ({
-        id: el.id,
-        type: el.type,
-        name: el.tags.name,
-        category: 'leisure',
-        subcategory: el.tags.leisure || 'park',
-        latitude: el.center?.lat,
-        longitude: el.center?.lon,
-        tags: el.tags,
-      }))
-  } catch (error) {
-    console.error('Parks query failed:', error)
-    return []
-  }
+  return fetchFromOpenTripMap(lat, lng, radiusMetres, 'parks,gardens,natural')
 }
 
 /**
- * Format POI data for RAG embedding
+ * Format POI for embedding/storage
  */
 export function formatPOIForEmbedding(poi: POI): string {
-  const details: string[] = []
-  
-  // Add opening hours if available
-  if (poi.tags.opening_hours) {
-    details.push(`Open: ${poi.tags.opening_hours}`)
-  }
-  
-  // Add phone if available
-  if (poi.tags.phone || poi.tags['contact:phone']) {
-    details.push(`Phone: ${poi.tags.phone || poi.tags['contact:phone']}`)
-  }
-  
-  // Add website if available
-  if (poi.tags.website || poi.tags['contact:website']) {
-    details.push(`Website: ${poi.tags.website || poi.tags['contact:website']}`)
-  }
-  
-  // Add cuisine for restaurants
-  if (poi.tags.cuisine) {
-    details.push(`Cuisine: ${poi.tags.cuisine.replace(/;/g, ', ')}`)
-  }
-  
-  // Add wheelchair accessibility
-  if (poi.tags.wheelchair === 'yes') {
-    details.push('Wheelchair accessible')
-  }
-  
-  const detailsStr = details.length > 0 ? ` ${details.join('. ')}.` : ''
-  
-  return `${poi.name} is a ${poi.subcategory} in the area.${detailsStr}`
+  return `${poi.name} is a ${poi.subcategory} in the area.`
 }
